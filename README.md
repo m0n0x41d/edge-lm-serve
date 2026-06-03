@@ -1,13 +1,59 @@
-# edge-lm
+# edge-lm-serve
 
 ![Gemma E2B compression flow: 9.26 GB BF16 compressed to 1.44 GB — 6.4× smaller](https://cdn.thestage.ai/production/cms_file_upload/1780406294-645b80f9-cebe-4ef2-bc04-f524afb4f244/Tokens%20per%20Second%20CuDNN%20%282%29.png)
 
-**Tiny LLMs optimized for edge deployment.**
+**A private, OpenAI-compatible local LLM server for Apple Silicon.**
 
-`edge-lm` runs compressed large language models on-device — Apple Silicon Macs and iPhones — through [MLX](https://github.com/ml-explore/mlx). The first release ships the **smallest publicly available Gemma 4 checkpoints optimized for edge deployment** — roughly **7× smaller** than the original while preserving the capabilities that matter most for on-device assistants: general world knowledge, instruction following, and tool use.
+`edge-lm-serve` keeps a compressed Gemma 4 model resident (warm) in memory on your Mac and serves it over an OpenAI-compatible HTTP API — point any OpenAI client, SDK, or tool at `localhost` and get private, on-device completions with no cloud round-trip.
 
+It is built on [**edge-lm**](https://github.com/TheStageAI/edge-lm) by [TheStageAI](https://thestage.ai), which provides the ~7× smaller Gemma 4 checkpoints and the MLX inference core (the `edge_lm` package). This project adds the warm-model serving layer on top — and is growing toward an on-device Mac assistant built on the same core. See [Acknowledgments](#acknowledgments).
 
-> 📝 Read the full write-up: [*7× size reduction for Gemma 4 Edge models — Compressing PLE architectures*](https://app.thestage.ai/blog/7x-size-reduction-for-Gemma4-Edge-models?id=14).
+## Quick start
+
+```bash
+git clone https://github.com/m0n0x41d/edge-lm-serve.git
+cd edge-lm-serve
+
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[serve]"        # inference core + fastapi/uvicorn
+```
+
+Start the server (downloads `TheStageAI/gemma-4-E2B-it` on first run):
+
+```bash
+python -m edge_lm.serve          # OpenAI-compatible API at http://127.0.0.1:8000/v1
+# python -m edge_lm.serve --model TheStageAI/gemma-4-E4B-it --size l --port 8000
+```
+
+Call it with the OpenAI SDK:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="not-needed")
+resp = client.chat.completions.create(
+    model="TheStageAI/gemma-4-E2B-it",
+    messages=[{"role": "user", "content": "What is 2+2?"}],
+    stream=True,
+)
+for chunk in resp:
+    print(chunk.choices[0].delta.content or "", end="", flush=True)
+```
+
+…or `curl`:
+
+```bash
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "TheStageAI/gemma-4-E2B-it", "messages": [{"role": "user", "content": "What is 2+2?"}]}'
+```
+
+## How serving works
+
+The model is loaded once at startup and stays resident. Requests serialize on a single lock (one generation at a time on the Metal GPU) while streaming stays responsive, and a small pool of per-conversation KV caches lets follow-up turns skip re-prefill — **≈3.6× faster time-to-first-token on a cache hit** (measured on an Apple M3 Pro, E2B).
+
+- **Endpoints:** `POST /v1/chat/completions` (streaming + non-streaming), `GET /v1/models`, `GET /health`.
+- **Config** via flags or `EDGE_LM_*` env vars: `--model`, `--size`, `--host`, `--port`, `--max-tokens`, `--cache-capacity`, `--served-model-name`.
 
 ## Models
 
@@ -16,31 +62,9 @@
 | [`TheStageAI/gemma-4-E2B-it`](https://huggingface.co/TheStageAI/gemma-4-E2B-it) | **1.44 GB** | 1.72 GB | up to 6.4× |
 | [`TheStageAI/gemma-4-E4B-it`](https://huggingface.co/TheStageAI/gemma-4-E4B-it) | **2.72 GB** | 3.28 GB | up to 5.6× |
 
-Weights download automatically from HuggingFace on first run. Each model ships two operating points — `l` (more quality, larger artifact) and `m` (the smaller headline compression target, default).
+Weights download automatically from HuggingFace on first run. Each model ships two operating points — `l` (more quality, larger artifact) and `m` (the smaller headline compression target, default). These compressed checkpoints are TheStageAI's work — read the write-up: [*7× size reduction for Gemma 4 Edge models — Compressing PLE architectures*](https://app.thestage.ai/blog/7x-size-reduction-for-Gemma4-Edge-models?id=14).
 
-## Key features
-
-- **~7× smaller checkpoints.** The default Gemma 4 E2B checkpoint fits in 1.44 GB, and E4B fits in 2.72 GB — small enough to download quickly and stay within mobile per-app memory budgets.
-- **Accuracy preserved where it counts.** Quality is held on the three things that matter most for edge assistants — instruction following (IFEval), tool calls (τ²-Bench), and general world knowledge (MMLU-Pro).
-- **MLX-ready artifacts.** Decoder weights use a flat, MLX-compatible per-group quantization format; PLE tables use a compact AQLM-style vector-quantization codec (4.7 GB → ~0.26 GB), decompressed on the fly with a single batched gather.
-
-## Quick start
-
-```bash
-git clone https://github.com/TheStageAI/edge-lm.git
-cd edge-lm
-
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt        # or: pip install -e .
-```
-
-Run text generation (downloads `TheStageAI/gemma-4-E2B-it` on first run):
-
-```bash
-python examples/generation_test.py --prompts "What is 2+2?" "Explain gravity in one sentence"
-```
-
-Use it from Python:
+## Python API (direct, no server)
 
 ```python
 from edge_lm import load
@@ -65,54 +89,13 @@ python examples/test_audio.py  --audio recording.wav --prompt "Transcribe this s
 python examples/chat.py --tools                      # interactive chat with tool use
 ```
 
-## Serving (OpenAI-compatible API)
-
-Keep the model warm in memory and serve it over an OpenAI-compatible HTTP API,
-so any OpenAI client or tool can talk to it locally:
-
-```bash
-pip install -e ".[serve]"        # adds fastapi + uvicorn
-python -m edge_lm.serve          # serves TheStageAI/gemma-4-E2B-it at http://127.0.0.1:8000/v1
-# python -m edge_lm.serve --model TheStageAI/gemma-4-E4B-it --size l --port 8000
-```
-
-The model is loaded once at startup and stays resident; requests serialize on a
-single lock (one generation at a time on the Metal GPU) while streaming stays
-responsive, and a small pool of per-conversation KV caches lets follow-up turns
-skip re-prefill.
-
-Point any OpenAI client at it:
-
-```python
-from openai import OpenAI
-
-client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="not-needed")
-resp = client.chat.completions.create(
-    model="TheStageAI/gemma-4-E2B-it",
-    messages=[{"role": "user", "content": "What is 2+2?"}],
-    stream=True,
-)
-for chunk in resp:
-    print(chunk.choices[0].delta.content or "", end="", flush=True)
-```
-
-Or with `curl`:
-
-```bash
-curl http://127.0.0.1:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "TheStageAI/gemma-4-E2B-it", "messages": [{"role": "user", "content": "What is 2+2?"}]}'
-```
-
-Config via flags or `EDGE_LM_*` env vars: `--host`, `--port`, `--max-tokens`,
-`--cache-capacity`, `--served-model-name`. Endpoints: `POST /v1/chat/completions`
-(streaming + non-streaming), `GET /v1/models`, `GET /health`.
-
 ## Benchmarks
+
+The quality and performance numbers below are from **edge-lm (TheStageAI)** for the compressed checkpoints; `Ours` / `TheStage (ours)` refers to TheStageAI's compressed model.
 
 ### Quality
 
-Every model — ours and the GGUF baselines alike — is dequantized to a standard BF16 checkpoint and served through vLLM, so the backend is equalized across the table. We report **MMLU-Pro** (general knowledge), **IFEval** (instruction following), and **τ²-Bench / Tau2** (multi-step tool use). For Tau2 the Gemma checkpoint under test acts as the agent while a fixed `Qwen3-235B-A22B-2507` simulates the user.
+Every model — the compressed TheStage checkpoints and the GGUF baselines alike — is dequantized to a standard BF16 checkpoint and served through vLLM, so the backend is equalized across the table. Reported: **MMLU-Pro** (general knowledge), **IFEval** (instruction following), and **τ²-Bench / Tau2** (multi-step tool use). For Tau2 the Gemma checkpoint under test acts as the agent while a fixed `Qwen3-235B-A22B-2507` simulates the user.
 
 `Ours L` keeps more quality at a larger artifact size; `Ours M` is the smaller headline compression target.
 
@@ -141,7 +124,7 @@ Bold metric values mark the best result among the compressed checkpoints in each
 Reproduce the quality benchmarks:
 
 ```bash
-pip install "edge-lm[eval]"   # adds lm-evaluation-harness
+pip install -e ".[eval]"   # adds lm-evaluation-harness
 python benchmarks/evaluate.py --tasks ifeval --apply-chat-template --max-tokens 2048
 python benchmarks/evaluate.py --tasks mmlu_pro --apply-chat-template
 ```
@@ -179,8 +162,12 @@ python benchmarks/performance.py --model TheStageAI/gemma-4-E2B-it \
     --compare-ref --compare-ref-4bit --ref-4bit-group-size 32
 ```
 
+## Acknowledgments
+
+`edge-lm-serve` is a fork of [**edge-lm**](https://github.com/TheStageAI/edge-lm) by [TheStageAI](https://thestage.ai). The compressed Gemma 4 checkpoints, the MLX inference core (the `edge_lm` package), the examples, and the benchmarks above are their work. This project adds the OpenAI-compatible warm-model serving layer (`edge_lm.serve`) on top and tracks upstream via the `upstream` git remote. Model details: [*7× size reduction for Gemma 4 Edge models — Compressing PLE architectures*](https://app.thestage.ai/blog/7x-size-reduction-for-Gemma4-Edge-models?id=14). Huge thanks to the TheStage team.
+
 ## License
 
-Released under the [MIT License](LICENSE), © 2026 thestage.ai labs.
+Released under the [MIT License](LICENSE), © 2026 thestage.ai labs. Serving-layer additions in this fork are likewise MIT.
 
 The compressed model weights are derivatives of Google's Gemma 4 and are additionally subject to the [Gemma Terms of Use](https://ai.google.dev/gemma/terms).
