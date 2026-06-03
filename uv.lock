@@ -498,7 +498,7 @@ wheels = [
 ]
 
 [[package]]
-name = "edge-lm"
+name = "edge-lm-serve"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
