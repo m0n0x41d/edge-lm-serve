@@ -143,6 +143,11 @@ class ModelSession:
         prompt_token_count = len(prompt_ids)
         state = self._cache.acquire(prompt_ids)
         stops = tuple(s for s in params.stop if s)
+        # Hold back the last (longest stop length - 1) chars before yielding, so a
+        # stop sequence split across chunks (e.g. "E" then "ND" with stop "END")
+        # is never partially emitted and then impossible to retract. 0 when there
+        # are no stops, so plain streaming keeps emitting every char immediately.
+        hold_back = max((len(s) for s in stops), default=1) - 1
 
         # stream_generate is annotated -> str | Generator[str], but with
         # input_ids set it yields GenerationResult records; cast so attribute
@@ -182,18 +187,30 @@ class ModelSession:
                 )
                 return  # stop string: deliberate early abort; this turn isn't cached
 
-            delta = full_text[emitted:]
-            emitted = len(full_text)
-            if delta:
-                yield GenerationChunk(
-                    delta, result.token, None, prompt_token_count, generation_tokens,
-                )
-
             if result.finish_reason is not None:
+                # Generation ended with no stop hit: flush the held-back tail.
+                tail = full_text[emitted:]
+                if tail:
+                    yield GenerationChunk(
+                        tail, result.token, None, prompt_token_count, generation_tokens,
+                    )
+                emitted = len(full_text)
                 yield GenerationChunk(
                     "", None, result.finish_reason, prompt_token_count, generation_tokens,
                 )
                 finished = True
+                continue
+
+            # Mid-stream: emit only text that cannot be the start of a stop
+            # sequence, holding back the last `hold_back` chars in case a stop
+            # straddles the next chunk.
+            safe_end = len(full_text) - hold_back
+            if safe_end > emitted:
+                yield GenerationChunk(
+                    full_text[emitted:safe_end], result.token, None,
+                    prompt_token_count, generation_tokens,
+                )
+                emitted = safe_end
 
 
 # ---------------------------------------------------------------------------

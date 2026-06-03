@@ -160,6 +160,50 @@ def test_core_stop_truncation_and_usage():
     assert chunks[0].prompt_tokens == 4  # len(StubTokenizer.encode(...))
 
 
+def _stub_stream(steps):
+    def fake(model, tokenizer, prompt, input_ids=None, prompt_cache_state=None, **kw):
+        for token, text, finish in steps:
+            yield SimpleNamespace(
+                text=text, token=token, finish_reason=finish,
+                prompt_tokens=4, generation_tokens=token,
+            )
+    return fake
+
+
+def _generate_with_stub(steps, params):
+    original = core.stream_generate
+    core.stream_generate = _stub_stream(steps)
+    try:
+        session = ModelSession(model=None, tokenizer=StubTokenizer())
+        return list(session.generate([{"role": "user", "content": "q"}], params))
+    finally:
+        core.stream_generate = original
+
+
+def test_core_stop_split_across_chunks():
+    # Codex P2: stop "END" arrives as "E" then "ND" — the partial "E" must never
+    # leak before "ND" confirms it was a stop sequence.
+    chunks = _generate_with_stub(
+        [(1, "Hi ", None), (2, "E", None), (3, "ND now", None)],
+        GenerationParams(stop=("END",)),
+    )
+    text = "".join(c.text for c in chunks)
+    assert text == "Hi "  # everything before the stop, no leaked "E"/"END"/"now"
+    assert chunks[-1].finish_reason == "stop"
+
+
+def test_core_finish_flushes_held_back_tail():
+    # A stop is set but never hit: the chars held back for stop-detection must
+    # still be flushed when generation ends naturally.
+    chunks = _generate_with_stub(
+        [(1, "all good", None), (2, "", "length")],
+        GenerationParams(stop=("NEVER",)),
+    )
+    text = "".join(c.text for c in chunks)
+    assert text == "all good"
+    assert chunks[-1].finish_reason == "length"
+
+
 # ---------------------------------------------------------------------------
 # Standalone runner (no pytest required)
 # ---------------------------------------------------------------------------
@@ -171,6 +215,8 @@ def _main() -> int:
         test_models_and_health,
         test_error_surfaces_as_500,
         test_core_stop_truncation_and_usage,
+        test_core_stop_split_across_chunks,
+        test_core_finish_flushes_held_back_tail,
     ]
     failed = 0
     for test in tests:
