@@ -3,17 +3,18 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "edge-lm"
+name = "edge-lm-serve"
 version = "0.1.0"
-description = "Tiny LLMs on Apple Silicon via MLX"
+description = "OpenAI-compatible local server for TheStageAI's compressed Gemma 4 on Apple Silicon (MLX)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "thestage.ai labs" }]
+# Upstream edge-lm authorship preserved; fork maintainer added. See Acknowledgments in README.
+authors = [{ name = "thestage.ai labs" }, { name = "Ivan Zakutnii" }]
 classifiers = [
     "License :: OSI Approved :: MIT License",
 ]
-keywords = ["mlx", "llm", "apple-silicon", "quantization", "gemma", "on-device"]
+keywords = ["mlx", "llm", "apple-silicon", "gemma", "on-device", "openai-api", "llm-server"]
 dependencies = [
     "mlx>=0.31.0",
     "mlx-vlm>=0.5.0",
@@ -28,9 +29,15 @@ dependencies = [
 eval = ["lm-eval>=0.4.12"]
 # Voice input for examples/chat.py --voice
 voice = ["sounddevice>=0.5.0"]
+# OpenAI-compatible warm-model HTTP server (python -m edge_lm.serve)
+serve = ["fastapi>=0.115", "uvicorn[standard]>=0.30"]
+
+[project.scripts]
+edge-lm-serve = "edge_lm.serve.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/TheStageAI/edge-lm"
+Homepage = "https://github.com/m0n0x41d/edge-lm-serve"
+Upstream = "https://github.com/TheStageAI/edge-lm"
 
 [tool.setuptools.packages.find]
 include = ["edge_lm*"]
