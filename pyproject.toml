@@ -28,6 +28,11 @@ dependencies = [
 eval = ["lm-eval>=0.4.12"]
 # Voice input for examples/chat.py --voice
 voice = ["sounddevice>=0.5.0"]
+# OpenAI-compatible warm-model HTTP server (python -m edge_lm.serve)
+serve = ["fastapi>=0.115", "uvicorn[standard]>=0.30"]
+
+[project.scripts]
+edge-lm-serve = "edge_lm.serve.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/TheStageAI/edge-lm"

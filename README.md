@@ -65,6 +65,49 @@ python examples/test_audio.py  --audio recording.wav --prompt "Transcribe this s
 python examples/chat.py --tools                      # interactive chat with tool use
 ```
 
+## Serving (OpenAI-compatible API)
+
+Keep the model warm in memory and serve it over an OpenAI-compatible HTTP API,
+so any OpenAI client or tool can talk to it locally:
+
+```bash
+pip install -e ".[serve]"        # adds fastapi + uvicorn
+python -m edge_lm.serve          # serves TheStageAI/gemma-4-E2B-it at http://127.0.0.1:8000/v1
+# python -m edge_lm.serve --model TheStageAI/gemma-4-E4B-it --size l --port 8000
+```
+
+The model is loaded once at startup and stays resident; requests serialize on a
+single lock (one generation at a time on the Metal GPU) while streaming stays
+responsive, and a small pool of per-conversation KV caches lets follow-up turns
+skip re-prefill.
+
+Point any OpenAI client at it:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="not-needed")
+resp = client.chat.completions.create(
+    model="TheStageAI/gemma-4-E2B-it",
+    messages=[{"role": "user", "content": "What is 2+2?"}],
+    stream=True,
+)
+for chunk in resp:
+    print(chunk.choices[0].delta.content or "", end="", flush=True)
+```
+
+Or with `curl`:
+
+```bash
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "TheStageAI/gemma-4-E2B-it", "messages": [{"role": "user", "content": "What is 2+2?"}]}'
+```
+
+Config via flags or `EDGE_LM_*` env vars: `--host`, `--port`, `--max-tokens`,
+`--cache-capacity`, `--served-model-name`. Endpoints: `POST /v1/chat/completions`
+(streaming + non-streaming), `GET /v1/models`, `GET /health`.
+
 ## Benchmarks
 
 ### Quality
